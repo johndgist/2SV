@@ -98,7 +98,6 @@ nav{display:flex;align-items:center;gap:clamp(14px,2.6vw,36px)}
 .row h3{grid-column:2/span 5;font-size:clamp(22px,2.7vw,42px);line-height:1.02;letter-spacing:-0.03em;font-weight:600;text-wrap:balance;position:relative;z-index:1;transition:color .25s}
 .row:hover h3{color:var(--deep-orange)}
 .row p{grid-column:8/span 5;font-size:16px;line-height:1.58;color:var(--grey-700);text-wrap:pretty;position:relative;z-index:1}
-.row canvas.trace{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
 
 /* quote */
 .quote{background:var(--offblue);padding:clamp(64px,12vh,150px) var(--pad);row-gap:clamp(24px,4vh,48px);margin-bottom:clamp(70px,12vh,140px)}
@@ -114,20 +113,18 @@ nav{display:flex;align-items:center;gap:clamp(14px,2.6vw,36px)}
 .sector-list p{margin-top:22px;font-size:16px;line-height:1.6;color:var(--grey-700);max-width:58ch;text-wrap:pretty}
 
 /* contact */
-.contact{position:relative;overflow:hidden;isolation:isolate;background:var(--navy);color:var(--white);padding:clamp(60px,11vh,140px) var(--pad) clamp(30px,5vh,56px);touch-action:pan-y}
-.contact-bg{position:absolute;inset:0;background:url("gradient-4.png") 75% 85%/cover no-repeat;z-index:-3}
-.contact-shade{position:absolute;inset:0;background:linear-gradient(160deg,rgba(22,45,66,.92) 0%,rgba(22,45,66,.74) 40%,rgba(22,45,66,.56) 72%,rgba(22,45,66,.66) 100%);z-index:-2}
+.contact{position:relative;overflow:hidden;isolation:isolate;background:radial-gradient(60% 80% at 85% 20%,rgba(72,116,158,0.28) 0%,rgba(72,116,158,0) 70%),radial-gradient(70% 70% at 10% 100%,rgba(16,34,51,0.9) 0%,rgba(16,34,51,0) 70%),var(--navy);color:var(--white);padding:clamp(60px,11vh,140px) var(--pad) clamp(30px,5vh,56px);touch-action:pan-y}
 #contactField{position:absolute;inset:0;width:100%;height:100%;z-index:-1}
 .contact h2{font-size:clamp(42px,8vw,150px);line-height:0.9;letter-spacing:-0.042em;font-weight:700;color:var(--white);pointer-events:none}
 .contact-row{display:flex;flex-wrap:wrap;gap:clamp(18px,4vw,52px);align-items:baseline;margin-top:clamp(30px,5vh,64px)}
 .mail{font-size:clamp(20px,2.6vw,40px);letter-spacing:-0.022em;font-weight:500;color:var(--white);border-bottom:1px solid rgba(255,255,255,0.4);padding-bottom:4px;transition:color .25s,border-color .25s}
 .mail:hover{color:var(--orange);border-color:var(--orange)}
-.contact-row .mono{color:rgba(255,255,255,0.72)}
-.charge-hint{display:block;margin-top:26px;color:rgba(255,255,255,0.6);font-size:10px}
+.contact-row .mono{color:rgba(255,255,255,0.86)}
+.charge-hint{display:block;margin-top:26px;color:rgba(255,255,255,0.78);font-size:11px}
 .foot{margin-top:clamp(48px,9vh,120px);padding-top:22px;border-top:1px solid rgba(255,255,255,0.22);display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between}
 .foot-brand{display:flex;align-items:center;gap:11px}
 .foot-brand img{opacity:.85}
-.foot .mono{color:rgba(255,255,255,0.66)}
+.foot .mono{color:rgba(255,255,255,0.84)}
 
 /* reveal */
 .reveal{opacity:0;transform:translateY(22px)}

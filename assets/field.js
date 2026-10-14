@@ -29,6 +29,7 @@
     return { ramp: br, level: bl };
   }
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function hash(i, k) { var v = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453; return v - Math.floor(v); }
   function seeded(seed) { return function () { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; }; }
 
   /* run a loop only while its element is on screen */
@@ -71,11 +72,17 @@
     this.ramp = new Int8Array(n).fill(-1); this.lvl = new Int8Array(n);
     this.ph = new Float32Array(n); this.sp = new Float32Array(n); this.ph2 = new Float32Array(n); this.sp2 = new Float32Array(n);
     this.amp = new Float32Array(n); this.blink = new Float32Array(n); this.hue = new Float32Array(n);
+    this.sR = new Int8Array(n); this.sL = new Int8Array(n);
     var rnd = seeded(20260821), sample = this.o.sampler ? this.o.sampler(this.cols, this.rows) : null;
     for (var y = 0; y < this.rows; y++) for (var x = 0; x < this.cols; x++) {
       var i = y * this.cols + x, nx = this.cols > 1 ? x / (this.cols - 1) : 0, ny = this.rows > 1 ? y / (this.rows - 1) : 0;
       var info = this.o.field ? this.o.field(nx, ny, rnd, sample, x, y) : null;
       if (info) { this.ramp[i] = info.ramp; this.lvl[i] = info.level; }
+      if (this.o.dynamic) {
+        var q = { ramp: nx > 0.6 ? 2 : 1, level: 3 };
+        if (sample) { var si = (y * sample.width + x) * 4; q = nearest(sample.data[si], sample.data[si + 1], sample.data[si + 2]); }
+        this.sR[i] = q.ramp; this.sL[i] = q.level;
+      }
       this.ph[i] = rnd() * 6.283; this.sp[i] = 1.6 + rnd() * 3.4; this.ph2[i] = rnd() * 6.283; this.sp2[i] = 0.9 + rnd() * 2.6;
       this.amp[i] = 1 + rnd() * 1.8; this.blink[i] = rnd() * 0.5 + 0.5; this.hue[i] = rnd();
     }
@@ -216,10 +223,18 @@
     for (var i = 0, n = heat.length; i < n; i++) {
       var h = heat[i];
       if (h > 0.002) heat[i] = h * decay; else { heat[i] = 0; h = 0; }
-      var base = this.ramp[i], x = (i % cols) * step, y = ((i / cols) | 0) * step, lvl, ramp;
+      var base = this.ramp[i], baseLvl = this.lvl[i], x = (i % cols) * step, y = ((i / cols) | 0) * step, lvl, ramp;
+      if (o.dynamic) {
+        /* living field: drifting density blobs, each cell re-rolls its own coin at its own pace */
+        var cx = i % cols, cy = (i / cols) | 0, slot = Math.floor(t * this.sp2[i] * 0.55 + this.ph2[i]);
+        if (hash(i, slot) < o.dynamic(cx / cols, cy / this.rows, t)) {
+          var sc = cy * cols + ((cx + Math.floor(t * 5)) % cols);
+          base = this.sR[sc]; baseLvl = this.sL[sc] + (hash(i, slot + 31) > 0.6 ? 1 : 0);
+        } else base = -1;
+      }
       if (base >= 0) {
-        if (h < 0.15 && Math.sin(t * this.sp2[i] + this.ph2[i]) > this.blink[i] + 0.34) continue;
-        lvl = this.lvl[i] + Math.round(Math.sin(t * this.sp[i] + this.ph[i]) * this.amp[i]);
+        if (!o.dynamic && h < 0.15 && Math.sin(t * this.sp2[i] + this.ph2[i]) > this.blink[i] + 0.34) continue;
+        lvl = baseLvl + Math.round(Math.sin(t * this.sp[i] + this.ph[i]) * (o.dynamic ? 0.6 : this.amp[i]));
         var d = Math.abs((i % cols) / cols - sweep);
         if (d < 0.1) lvl -= Math.round((1 - d / 0.1) * 2.4);
         ramp = base;
@@ -265,30 +280,28 @@
     c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.w = w; this.h = h; this.cell = 6; this.step = 8.4;
     var st = this.step, cols = Math.floor(w / st), rows = Math.floor(h / st), rnd = seeded(7 + (this.mode === "native" ? 99 : 0)), P = [];
+    this.cols = cols; this.rows = rows;
     if (this.mode === "drop") {
-      /* five rigid process boxes joined by thin handoff lines */
+      /* five rigid process boxes joined by thin handoff lines; work items queue at every box */
       var boxes = 5, bw = Math.max(3, Math.floor((cols - 6) / boxes) - 3), bh = Math.max(4, Math.floor(rows * 0.42)), top = Math.floor((rows - bh) / 2);
-      var gapC = Math.floor((cols - boxes * bw) / (boxes + 1));
+      var gapC = Math.max(2, Math.floor((cols - boxes * bw) / (boxes + 1)));
+      this.boxes = []; this.lineY = (top + Math.floor(bh / 2)) * st;
       for (var b = 0; b < boxes; b++) {
         var left = gapC + b * (bw + gapC);
+        this.boxes.push({ x0: left * st, x1: (left + bw) * st, cx: (left + bw / 2) * st, busy: 0 });
         for (var y = 0; y < bh; y++) for (var x = 0; x < bw; x++) {
-          if (rnd() > 0.82) continue;
-          P.push({ hx: (left + x) * st, hy: (top + y) * st, ramp: rnd() > 0.88 ? 1 : 0, lvl: 2 + Math.round(rnd() * 2) });
+          P.push({ hx: (left + x) * st, hy: (top + y) * st, ramp: rnd() > 0.88 ? 1 : 0, lvl: 2 + Math.round(rnd() * 2), box: b, rate: 0.4 + rnd() * 1.4 });
         }
-        if (b < boxes - 1) for (var hx = left + bw; hx < left + bw + gapC; hx++) P.push({ hx: hx * st, hy: (top + Math.floor(bh / 2)) * st, ramp: 1, lvl: 1, link: true });
+        if (b < boxes - 1) for (var hx = left + bw; hx < left + bw + gapC; hx++) P.push({ hx: hx * st, hy: this.lineY, ramp: 1, lvl: 1, link: true, box: -1, rate: 0 });
       }
+      this.tokens = [];
+      for (var k = 0; k < 3; k++) this.tokens.push({ x: -st * 2 - k * w * 0.36, stop: 0, wait: 0 });
     } else {
-      /* one continuous, tapering band: wide and messy on the left, resolved on the right */
-      for (var cx = 0; cx < cols; cx++) {
-        var nx = cx / cols, thick = Math.max(2, Math.round(rows * (0.36 - nx * 0.2))), mid = rows * 0.5 + Math.sin(nx * 5.2) * rows * 0.12 * (1 - nx * 0.6);
-        for (var k = 0; k < thick; k++) {
-          if (rnd() > 0.9) continue;
-          var ry = Math.round(mid - thick / 2 + k);
-          P.push({ hx: cx * st, hy: ry * st, ramp: nx < 0.42 ? 0 : nx < 0.72 ? 1 : 2, lvl: Math.max(1, 4 - Math.round(Math.abs(k - thick / 2))), nx: nx });
-        }
-      }
+      /* one continuous stream: wide and noisy on the left, narrowing into a clean fast lane on the right */
+      var n = Math.round(cols * rows * 0.34);
+      for (var i = 0; i < n; i++) P.push({ hx: rnd() * w, q: rnd() - 0.5, ph: rnd() * 6.28, sp: 0.6 + rnd() * 0.8 });
     }
-    P.forEach(function (p) { p.x = p.hx; p.y = p.hy; p.vx = 0; p.vy = 0; p.ph = rnd() * 6.28; });
+    P.forEach(function (p) { p.x = p.hx; p.y = p.hy || 0; p.vx = 0; p.vy = 0; p.ph = p.ph || rnd() * 6.28; });
     this.P = P;
   };
   FlowField.prototype.loop = function (ts) {
@@ -299,37 +312,76 @@
   FlowField.prototype.frame = function (dt) {
     if (!this.P) return;
     this.t += dt;
-    var ctx = this.ctx, st = this.step, cell = this.cell, t = this.t, P = this.P, native = this.mode === "native";
+    var ctx = this.ctx, st = this.step, cell = this.cell, t = this.t, P = this.P, native = this.mode === "native", w = this.w, h = this.h;
     var mx = this.mx, my = this.my;
-    if (COARSE && !REDUCE) {
-      /* touch: a slow phantom cursor sweeps through so the idea still reads */
-      mx = (0.5 + 0.45 * Math.sin(t * 0.5)) * this.w; my = (0.5 + 0.3 * Math.sin(t * 0.9)) * this.h;
-    }
+    if (COARSE && !REDUCE) { mx = (0.5 + 0.45 * Math.sin(t * 0.5)) * w; my = (0.5 + 0.3 * Math.sin(t * 0.9)) * h; }
     var R = native ? 70 : 46, F = native ? 2400 : 900, K = native ? 3.2 : 26, D = native ? 0.86 : 0.7;
-    ctx.clearRect(0, 0, this.w, this.h);
-    for (var i = 0; i < P.length; i++) {
-      var p = P[i], hx = p.hx, hy = p.hy;
-      if (native) hy += Math.sin(t * 1.6 + p.hx * 0.02) * 3;            /* the rebuilt band breathes */
-      var dx = p.x - mx, dy = p.y - my, d2 = dx * dx + dy * dy, near = 0;
-      if (d2 < R * R) {
-        var d = Math.sqrt(d2) || 1, f = (1 - d / R); near = f;
-        p.vx += (dx / d) * f * F * dt; p.vy += (dy / d) * f * F * dt;
+    ctx.clearRect(0, 0, w, h);
+
+    if (!native) {
+      /* work items: travel the handoff line, then sit and wait inside every box */
+      var B = this.boxes;
+      B.forEach(function (b) { b.busy = Math.max(0, b.busy - dt * 2); });
+      for (var k = 0; k < this.tokens.length; k++) {
+        var T = this.tokens[k];
+        if (T.wait > 0) { T.wait -= dt; if (B[T.stop - 1]) B[T.stop - 1].busy = 1; continue; }
+        var target = T.stop < B.length ? B[T.stop].cx : w + st * 4;
+        T.x += 70 * dt;
+        if (T.x >= target) {
+          if (T.stop < B.length) { T.x = target; T.wait = 0.8 + Math.random() * 1.6; T.stop++; }
+          else { T.x = -st * 3 - Math.random() * w * 0.3; T.stop = 0; }
+        }
       }
+    }
+    for (var i = 0; i < P.length; i++) {
+      var p = P[i], hx, hy, ramp, lvl, nx = 0;
+      if (native) {
+        /* the stream moves; faster once it's resolved */
+        nx = p.hx / w;
+        p.hx += (22 + 70 * nx) * p.sp * dt;
+        if (p.hx > w + st) { p.hx = -st * Math.random() * 3; p.x = p.hx; p.q = Math.random() - 0.5; }
+        nx = clamp(p.hx / w, 0, 1);
+        var thick = h * (0.42 - nx * 0.3), mid = h * 0.5 + Math.sin(nx * 5.2 - t * 0.8) * h * 0.1 * (1 - nx * 0.7);
+        var noise = Math.sin(t * 2.3 * p.sp + p.ph) * (1 - nx) * 9;
+        hx = p.hx; hy = mid + p.q * thick + noise;
+        ramp = nx < 0.42 ? 0 : nx < 0.72 ? 1 : 2;
+        lvl = 1 + Math.round((0.5 - Math.abs(p.q)) * 6 * (0.4 + nx));
+      } else {
+        hx = p.hx; hy = p.hy; ramp = p.ramp; lvl = p.lvl;
+        if (!p.link) {
+          var bx = this.boxes[p.box];
+          /* each box re-shuffles its own cells; a box with work in it churns harder */
+          var rate = p.rate * (1 + bx.busy * 3), slot = Math.floor(t * rate + p.ph);
+          if (hash(i, slot) > 0.8 - bx.busy * 0.1) continue;
+          if (bx.busy > 0.2 && hash(i, slot + 5) > 0.7) { ramp = 1; lvl = 3; }
+        }
+      }
+      var dx = p.x - mx, dy = p.y - my, d2 = dx * dx + dy * dy, near = 0;
+      if (d2 < R * R) { var d = Math.sqrt(d2) || 1, f = 1 - d / R; near = f; p.vx += (dx / d) * f * F * dt; p.vy += (dy / d) * f * F * dt; }
       p.vx += (hx - p.x) * K * dt; p.vy += (hy - p.y) * K * dt;
-      if (!native) { p.vx += (Math.random() - 0.5) * 6 * dt; }        /* old process: twitchy, stuck */
+      if (!native) p.vx += (Math.random() - 0.5) * 6 * dt;
       p.vx *= D; p.vy *= D; p.x += p.vx; p.y += p.vy;
       var disp = Math.min(1, Math.sqrt((p.x - hx) * (p.x - hx) + (p.y - hy) * (p.y - hy)) / 30);
-      var ramp = p.ramp, lvl = p.lvl;
       if (native) { if (near > 0.15 || disp > 0.3) { ramp = disp > 0.6 ? 3 : 2; lvl = 3 + Math.round(disp * 2); } }
-      else if (disp > 0.25) { ramp = 3; lvl = 2 + Math.round(disp * 3); }               /* strain shows as orange */
+      else if (disp > 0.25) { ramp = 3; lvl = 2 + Math.round(disp * 3); }
       lvl = clamp(lvl, 0, LEVELS);
       ctx.fillStyle = RAMPS[ramp][lvl].css;
-      ctx.fillRect(Math.round(p.x / st) * st, Math.round(p.y / st) * st, cell, cell);   /* snapped to the grid */
+      ctx.fillRect(Math.round(p.x / st) * st, Math.round(p.y / st) * st, cell, cell);
+    }
+    if (!native) {
+      /* draw the work items on top: a 2x2 orange block */
+      ctx.fillStyle = RAMPS[3][5].css;
+      for (var j = 0; j < this.tokens.length; j++) {
+        var tk = this.tokens[j], tx = Math.round(tk.x / st) * st, ty = Math.round(this.lineY / st) * st;
+        if (tx < -st || tx > w) continue;
+        ctx.fillRect(tx, ty - st, cell, cell); ctx.fillRect(tx + st, ty - st, cell, cell);
+        ctx.fillRect(tx, ty, cell, cell); ctx.fillRect(tx + st, ty, cell, cell);
+      }
     }
   };
 
   /* ---------------------------------------------------------------
-     Service rows: a one-cell orange line traces the row, number scrambles
+     Service rows: the row number scrambles on hover
      --------------------------------------------------------------- */
   var GLYPHS = "#%&*+=<>/\\|?0123456789";
   function scramble(el, finalText, ms) {
@@ -346,42 +398,6 @@
       if (p < 1) requestAnimationFrame(tick); else el.textContent = finalText;
     })(start);
   }
-  function traceRow(row) {
-    var cv = document.createElement("canvas"); cv.className = "trace"; cv.setAttribute("aria-hidden", "true"); row.appendChild(cv);
-    var ctx = cv.getContext("2d"), on = false, a = 0, raf = 0, last = 0, cellSz = 6, st = 8.4;
-    function size() { var dpr = Math.min(window.devicePixelRatio || 1, 2); cv.width = row.clientWidth * dpr; cv.height = row.clientHeight * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
-    function path() {
-      var w = row.clientWidth, h = row.clientHeight, cols = Math.floor(w / st), rows = Math.floor(h / st), pts = [], c, r;
-      for (c = 0; c < cols; c++) pts.push([c, 0]);
-      for (r = 1; r < rows; r++) pts.push([cols - 1, r]);
-      for (c = cols - 2; c >= 0; c--) pts.push([c, rows - 1]);
-      for (r = rows - 2; r > 0; r--) pts.push([0, r]);
-      return pts;
-    }
-    var pts = [];
-    function draw(ts) {
-      var dt = last ? (ts - last) / 1000 : 0.016; last = ts;
-      a = on ? Math.min(1, a + dt * 3) : Math.max(0, a - dt * 3);
-      ctx.clearRect(0, 0, cv.width, cv.height);
-      var n = pts.length, head = (ts / 1000 * 160) % n, lenOn = Math.floor(n * a);
-      for (var k = 0; k < lenOn; k++) {
-        var idx = (Math.floor(head) - k + n) % n, p = pts[idx], tail = k / Math.max(1, lenOn);
-        var lvl = clamp(5 - Math.floor(tail * 5), 1, 5), ramp = tail < 0.35 ? 3 : 2;
-        ctx.fillStyle = RAMPS[ramp][lvl].css;
-        ctx.fillRect(p[0] * st, p[1] * st, cellSz, cellSz);
-      }
-      if (a > 0) raf = requestAnimationFrame(draw); else { raf = 0; last = 0; }
-    }
-    function enter() {
-      on = true; size(); pts = path();
-      var num = row.querySelector(".row-n"); if (num) scramble(num, num.getAttribute("data-n"), 420);
-      if (!raf && !REDUCE) raf = requestAnimationFrame(draw);
-    }
-    function leave() { on = false; }
-    row.addEventListener("mouseenter", enter); row.addEventListener("mouseleave", leave);
-    row.addEventListener("focus", enter); row.addEventListener("blur", leave);
-  }
-
   /* ---------------------------------------------------------------
      Headlines decode from pixel noise as they enter the screen
      --------------------------------------------------------------- */
@@ -430,16 +446,17 @@
       host: document.getElementById("heroBand"), cell: 6, gap: 2.4, rule: true, sampler: sampler,
       brush: 6, strength: 0.22, decay: 0.95, charge: true, autoPath: true,
       words: ["HUMAN", "SHIP IT", "WORK", "HELLO"], idleAfter: 7,
-      field: function (nx, ny, rnd, data, x, y) {
-        var q, lum = 0.5;
-        if (data) {
-          var i = (y * data.width + x) * 4, r = data.data[i], g = data.data[i + 1], b = data.data[i + 2];
-          q = nearest(r, g, b); lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
-        } else q = { ramp: nx > 0.6 ? 2 : 1, level: 2 + Math.round(rnd() * 2) };
-        var vert = 1 - Math.pow(Math.abs(ny - 0.52) * 2.05, 1.7), horiz = 0.4 + 0.6 * Math.pow(nx, 0.7);
-        var density = Math.max(0, vert) * horiz * (0.6 + lum * 0.7);
-        if (rnd() > density * 0.95) return null;
-        return { ramp: q.ramp, level: clamp(q.level + (rnd() > 0.6 ? 1 : 0), 0, LEVELS) };
+      dynamic: function (nx, ny, t) {
+        /* clusters that drift, merge and split; the band itself undulates */
+        var u = nx - t * 0.035;
+        var mid = 0.52 + 0.09 * Math.sin(u * 5.5 + t * 0.45);
+        var vert = 1 - Math.pow(Math.abs(ny - mid) * 2.1, 1.6);
+        if (vert <= 0) return 0;
+        var b1 = 0.5 + 0.5 * Math.sin(u * 7.3 + t * 0.32) * Math.cos(ny * 5.1 - t * 0.27);
+        var b2 = 0.5 + 0.5 * Math.sin((u * 3.1 + ny * 2.3) * 2.7 - t * 0.21);
+        var b3 = 0.5 + 0.5 * Math.sin(u * 13 - ny * 9 + t * 0.6);
+        var horiz = 0.45 + 0.55 * Math.pow(nx, 0.6);
+        return clamp(vert * (0.18 + 0.5 * b1 + 0.3 * b2 + 0.15 * b3) * horiz * 1.05, 0, 0.95);
       }
     });
   }
@@ -456,16 +473,14 @@
 
     var contact = document.getElementById("contactField");
     if (contact) new HeatField(contact, {
-      host: contact.parentElement, cell: 7, gap: 3, dark: true, brush: 5, strength: 0.18, decay: 0.94, charge: true,
-      field: function (nx, ny, rnd) {
-        /* a sparse scatter that thickens toward the bottom right, like the gradient behind it */
-        var dens = Math.pow(nx, 2.2) * Math.pow(ny, 1.6) * 0.5;
-        if (rnd() > dens) return null;
-        return { ramp: rnd() > 0.5 ? 2 : 1, level: 1 + Math.round(rnd() * 2) };
-      }
+      host: contact.parentElement, cell: 7, gap: 3, dark: true, brush: 5, strength: 0.18, decay: 0.94, charge: true
     });
 
-    if (!COARSE) [].forEach.call(document.querySelectorAll(".row"), traceRow);
+    [].forEach.call(document.querySelectorAll(".row"), function (row) {
+      var num = row.querySelector(".row-n");
+      function go() { if (num) scramble(num, num.getAttribute("data-n"), 420); }
+      row.addEventListener("mouseenter", go); row.addEventListener("focus", go);
+    });
     decodeHeadings();
     reveals();
   }
